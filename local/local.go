@@ -70,6 +70,11 @@ func (f *FsLocal) String() string {
 // May return nil if an error occurred
 func (f *FsLocal) newFsObjectWithInfo(remote string, info os.FileInfo) fs.Object {
 	path := filepath.Join(f.root, remote)
+
+	// JD
+	path = filepath.ToSlash(path)
+	remote = filepath.ToSlash(remote)
+
 	o := &FsObjectLocal{local: f, remote: remote, path: path}
 	if info != nil {
 		o.info = info
