@@ -186,7 +186,16 @@ func (f *FsDrive) listAll(dirId string, title string, directoriesOnly bool, file
 	list := f.svc.Files.List().Q(query).MaxResults(1000)
 OUTER:
 	for {
-		files, err := list.Do()
+		var files *drive.FileList
+		var err error
+
+		DoList := func() error {
+			files, err = list.Do()
+			return err
+		}
+
+		err = Retry(DoList)
+
 		if err != nil {
 			return false, fmt.Errorf("Couldn't list directory: %s", err)
 		}
@@ -558,6 +567,7 @@ func (f *FsDrive) List() fs.ObjectsChan {
 		if err != nil {
 			fs.Stats.Error()
 			log.Printf("Couldn't find root: %s", err)
+			out = nil
 		} else {
 			if *driveFullList {
 				err = f.listDirFull(f.rootId, "", out)
@@ -567,6 +577,7 @@ func (f *FsDrive) List() fs.ObjectsChan {
 			if err != nil {
 				fs.Stats.Error()
 				log.Printf("List failed: %s", err)
+				out = nil
 			}
 		}
 	}()
@@ -641,6 +652,7 @@ func (f *FsDrive) Put(in io.Reader, remote string, modTime time.Time, size int64
 
 	directory, leaf := splitPath(o.remote)
 	directoryId, err := f.findDir(directory, true)
+
 	if err != nil {
 		return o, fmt.Errorf("Couldn't find or make directory: %s", err)
 	}
@@ -663,7 +675,14 @@ func (f *FsDrive) Put(in io.Reader, remote string, modTime time.Time, size int64
 
 	// Make the API request to upload metadata and file data.
 	in = &seekWrapper{in: in, size: size}
-	info, err = f.svc.Files.Insert(info).Media(in).Do()
+
+	doPut := func() error {
+		info, err = f.svc.Files.Insert(info).Media(in).Do()
+		return err
+	}
+
+	err = Retry(doPut)
+
 	if err != nil {
 		return o, fmt.Errorf("Upload failed: %s", err)
 	}
@@ -693,7 +712,12 @@ func (f *FsDrive) Rmdir() error {
 	}
 	// Delete the directory if it isn't the root
 	if f.root != "" {
-		err = f.svc.Files.Delete(f.rootId).Do()
+		doDelete := func() error {
+			return f.svc.Files.Delete(f.rootId).Do()
+		}
+
+		err = Retry(doDelete)
+
 		if err != nil {
 			return err
 		}
@@ -720,12 +744,36 @@ func (f *FsDrive) Purge() error {
 	if err != nil {
 		return err
 	}
-	err = f.svc.Files.Delete(f.rootId).Do()
+
+	doDelete := func() error {
+		err = f.svc.Files.Delete(f.rootId).Do()
+		return err
+	}
+
+	err = Retry(doDelete)
+
 	f.resetRoot()
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+func Retry(workFunction func() error) error {
+	maxRetries := 25
+	var err error
+
+	for i := 0; i < maxRetries; i++ {
+		err = workFunction()
+
+		if err != nil {
+			time.Sleep(10 * time.Second)
+		} else {
+			return nil
+		}
+	}
+
+	return err
 }
 
 // ------------------------------------------------------------
@@ -848,6 +896,7 @@ func (o *FsObjectDrive) Open() (in io.ReadCloser, err error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", fs.UserAgent)
+
 	res, err := o.drive.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -872,7 +921,15 @@ func (o *FsObjectDrive) Update(in io.Reader, modTime time.Time, size int64) erro
 
 	// Make the API request to upload metadata and file data.
 	in = &seekWrapper{in: in, size: size}
-	info, err := o.drive.svc.Files.Update(info.Id, info).SetModifiedDate(true).Media(in).Do()
+	var err error
+
+	DoUpdate := func() error {
+		info, err = o.drive.svc.Files.Update(info.Id, info).SetModifiedDate(true).Media(in).Do()
+		return err
+	}
+
+	err = Retry(DoUpdate)
+
 	if err != nil {
 		return fmt.Errorf("Update failed: %s", err)
 	}
